@@ -3,6 +3,7 @@ from torch import nn
 from torch import Tensor
 import torch.nn.functional as F
 from typing import Callable, Optional
+import numpy as np
 
 class MultiheadAttention(nn.Module):
     def __init__(self, d_model, n_heads, d_k=None, d_v=None, res_attention=False, attn_dropout=0., proj_dropout=0., qkv_bias=True, lsa=False):
@@ -100,7 +101,10 @@ class ScaledDotProductAttention(nn.Module):
                 attn_scores += attn_mask
 
         # Key padding mask (optional)
+        
         if key_padding_mask is not None:                              # mask with shape [bs x q_len] (only when max_w_len == q_len)
+            print(key_padding_mask.unsqueeze(1).unsqueeze(2).shape)
+            print(attn_scores.shape)
             attn_scores.masked_fill_(key_padding_mask.unsqueeze(1).unsqueeze(2), -np.inf)
 
         # normalize the attention weights

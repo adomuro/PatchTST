@@ -6,8 +6,8 @@ import os
 import torch
 from torch import nn
 
-from src.models.patchTST import PatchTST
-from src.learner import Learner, transfer_weights
+from src.models.patchTST import PatchTST, TSTransformerEncoder
+from src.learner import Learner, Learner_TS, transfer_weights
 from src.callback.tracking import *
 from src.callback.patch_mask import *
 from src.callback.transforms import *
@@ -40,6 +40,9 @@ parser.add_argument('--d_ff', type=int, default=512, help='Tranformer MLP dimens
 parser.add_argument('--dropout', type=float, default=0.2, help='Transformer dropout')
 parser.add_argument('--head_dropout', type=float, default=0.2, help='head dropout')
 parser.add_argument('--dim_feedforward', type=int, default=256, help='Dimension of dense feedforward part of transformer layer')
+parser.add_argument('--pos_encoding', choices={'fixed', 'learnable'}, default='fixed', help='Internal dimension of transformer embeddings')
+parser.add_argument('--normalization_layer', choices={'BatchNorm', 'LayerNorm'}, default='BatchNorm', help='Normalization layer to be used internally in transformer encoder')
+parser.add_argument('--freeze', action='store_true', help='If set, freezes all layer parameters except for the output layer. Also removes dropout except before the output layer')
 # Pretrain mask
 parser.add_argument('--mask_ratio', type=float, default=0.4, help='masking ratio for the input')
 # Optimization args
@@ -52,7 +55,7 @@ parser.add_argument('--model_type', type=str, default='based_model', help='for m
 
 args = parser.parse_args()
 print('args:', args)
-args.save_pretrained_model = 'patchtst_pretrained_cw'+str(args.context_points)+'_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-pretrain' + str(args.n_epochs_pretrain) + '_mask' + str(args.mask_ratio)  + '_model' + str(args.pretrained_model_id)
+args.save_pretrained_model = 'OriginalTransformer_pretrained_cw'+str(args.context_points)+'_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-pretrain' + str(args.n_epochs_pretrain) + '_mask' + str(args.mask_ratio)  + '_model' + str(args.pretrained_model_id)
 args.save_path = 'saved_models/' + args.dset_pretrain + '/masked_patchtst/' + args.model_type + '/'
 if not os.path.exists(args.save_path): os.makedirs(args.save_path)
 
@@ -65,27 +68,20 @@ def get_model(c_in, args):
     """
     c_in: number of variables
     """
-    # get number of patches
-    num_patch = (max(args.context_points, args.patch_len)-args.patch_len) // args.stride + 1    
-    print('number of patches:', num_patch)
     
     # get model
-    model = PatchTST(c_in=c_in,
-                target_dim=args.target_points,
-                patch_len=args.patch_len,
-                stride=args.stride,
-                num_patch=num_patch,
-                n_layers=args.n_layers,
-                n_heads=args.n_heads,
-                d_model=args.d_model,
-                shared_embedding=True,
-                d_ff=args.d_ff,                        
-                dropout=args.dropout,
-                head_dropout=args.head_dropout,
-                act='relu',
-                head_type='pretrain',
-                res_attention=False
-                )        
+    model = TSTransformerEncoder(feat_dim=c_in, 
+                                 #max_len=args.target_points, 
+                                 max_len=512,
+                                 d_model=args.d_model, 
+                                 n_heads=args.n_heads,
+                                 num_layers=args.n_layers, 
+                                 dim_feedforward=args.dim_feedforward,
+                                 dropout=args.dropout,
+                                 pos_encoding=args.pos_encoding, 
+                                 activation='relu',
+                                 norm=args.normalization_layer,
+                                 freeze=args.freeze)
     # print out the model size
     print('number of model params', sum(p.numel() for p in model.parameters() if p.requires_grad))
     return model
@@ -94,14 +90,16 @@ def get_model(c_in, args):
 def find_lr():
     # get dataloader
     dls = get_dls(args) # go to datautils.py returns info about dataset
+
     model = get_model(dls.vars, args)
     # get loss
     loss_func = torch.nn.MSELoss(reduction='mean')
+    
     # get callbacks
     cbs = [RevInCB(dls.vars, denorm=False)] if args.revin else []
-    cbs += [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio)]    
+    cbs += [MaskCB(mask_ratio=args.mask_ratio)]    
     # define learner
-    learn = Learner(dls, model, 
+    learn = Learner_TS(dls, model, 
                         loss_func, 
                         lr=args.lr, 
                         cbs=cbs,
@@ -122,12 +120,12 @@ def pretrain_func(lr=args.lr):
     # get callbacks
     cbs = [RevInCB(dls.vars, denorm=False)] if args.revin else []
     cbs += [
-         PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio),
+         MaskCB(mask_ratio=args.mask_ratio),
          SaveModelCB(monitor='valid_loss', fname=args.save_pretrained_model,                       
                         path=args.save_path)
         ]
     # define learner
-    learn = Learner(dls, model, 
+    learn = Learner_TS(dls, model, 
                         loss_func, 
                         lr=lr, 
                         cbs=cbs,

@@ -6,7 +6,7 @@ import os
 import torch
 from torch import nn
 
-from src.models.patchTST import PatchTST
+from src.models.patchTST import PatchTST, TSTransformerEncoder
 from src.learner import Learner, transfer_weights
 from src.callback.core import *
 from src.callback.tracking import *
@@ -70,27 +70,20 @@ def get_model(c_in, args, head_type, weight_path=None):
     """
     c_in: number of variables
     """
-    # get number of patches
-    num_patch = (max(args.context_points, args.patch_len)-args.patch_len) // args.stride + 1    
-    print('number of patches:', num_patch)
     
     # get model
-    model = PatchTST(c_in=c_in,
-                target_dim=args.target_points,
-                patch_len=args.patch_len,
-                stride=args.stride,
-                num_patch=num_patch,
-                n_layers=args.n_layers,
-                n_heads=args.n_heads,
-                d_model=args.d_model,
-                shared_embedding=True,
-                d_ff=args.d_ff,                        
-                dropout=args.dropout,
-                head_dropout=args.head_dropout,
-                act='relu',
-                head_type=head_type,
-                res_attention=False
-                )    
+    model = TSTransformerEncoder(feat_dim=c_in, 
+                                 #max_len=args.target_points, 
+                                 max_len=512,
+                                 d_model=args.d_model, 
+                                 n_heads=args.n_heads,
+                                 num_layers=args.n_layers, 
+                                 dim_feedforward=args.dim_feedforward,
+                                 dropout=args.dropout,
+                                 pos_encoding=args.pos_encoding, 
+                                 activation='relu',
+                                 norm=args.normalization_layer,
+                                 freeze=args.freeze)    
     if weight_path: model = transfer_weights(weight_path, model)
     # print out the model size
     print('number of model params', sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -109,10 +102,11 @@ def find_lr(head_type):
     loss_func = torch.nn.MSELoss(reduction='mean')
     # get callbacks
     cbs = [RevInCB(dls.vars)] if args.revin else []
-    cbs += [PatchCB(patch_len=args.patch_len, stride=args.stride)]
+    cbs += [MaskCB(mask_ratio=args.mask_ratio)]
+    #cbs += [PatchCB(patch_len=args.patch_len, stride=args.stride)]
         
     # define learner
-    learn = Learner(dls, model, 
+    learn = Learner_TS(dls, model, 
                         loss_func, 
                         lr=args.lr, 
                         cbs=cbs,
@@ -145,11 +139,12 @@ def finetune_func(lr=args.lr):
     # get callbacks
     cbs = [RevInCB(dls.vars, denorm=True)] if args.revin else []
     cbs += [
-         PatchCB(patch_len=args.patch_len, stride=args.stride),
+         MaskCB(mask_ratio=args.mask_ratio),
+         #PatchCB(patch_len=args.patch_len, stride=args.stride),
          SaveModelCB(monitor='valid_loss', fname=args.save_finetuned_model, path=args.save_path)
         ]
     # define learner
-    learn = Learner(dls, model, 
+    learn = Learner_TS(dls, model, 
                         loss_func, 
                         lr=lr, 
                         cbs=cbs,
@@ -175,11 +170,12 @@ def linear_probe_func(lr=args.lr):
     # get callbacks
     cbs = [RevInCB(dls.vars, denorm=True)] if args.revin else []
     cbs += [
-         PatchCB(patch_len=args.patch_len, stride=args.stride),
+         MaskCB(mask_ratio=args.mask_ratio),
+         #PatchCB(patch_len=args.patch_len, stride=args.stride),
          SaveModelCB(monitor='valid_loss', fname=args.save_finetuned_model, path=args.save_path)
         ]
     # define learner
-    learn = Learner(dls, model, 
+    learn = Learner_TS(dls, model, 
                         loss_func, 
                         lr=lr, 
                         cbs=cbs,
@@ -197,8 +193,9 @@ def test_func(weight_path):
     model = get_model(dls.vars, args, head_type='prediction')
     # get callbacks
     cbs = [RevInCB(dls.vars, denorm=True)] if args.revin else []
-    cbs += [PatchCB(patch_len=args.patch_len, stride=args.stride)]
-    learn = Learner(dls, model,cbs=cbs)
+    cbs+= [MaskCB(mask_ratio=args.mask_ratio)]
+    #cbs += [PatchCB(patch_len=args.patch_len, stride=args.stride)]
+    learn = Learner_TS(dls, model,cbs=cbs)
     out  = learn.test(dls.test, weight_path=weight_path+'.pth', scores=[mse,mae])         # out: a list of [pred, targ, score]
     print('score:', out[2])
     # save results
