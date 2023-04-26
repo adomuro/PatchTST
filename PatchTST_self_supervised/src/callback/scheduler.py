@@ -52,7 +52,7 @@ class OneCycleLR(Callback):
                                             max_momentum=self.max_momentum,
                                             div_factor=self.div_factor,
                                             final_div_factor=self.final_div_factor,
-                                            three_phase=self.three_phase,
+                                            #three_phase=self.three_phase,
                                             last_epoch=self.last_epoch,
                                             verbose=self.verbose
                                             )
