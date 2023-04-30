@@ -42,6 +42,7 @@ parser.add_argument('--head_dropout', type=float, default=0.2, help='head dropou
 parser.add_argument('--dim_feedforward', type=int, default=256, help='Dimension of dense feedforward part of transformer layer')
 # Pretrain mask
 parser.add_argument('--mask_ratio', type=float, default=0.4, help='masking ratio for the input')
+parser.add_argument('--mask_type', type=str,  choices={'random_masking', 'patches', 'features', 'same_mask'},  default='random_masking', help='type masking scheme')
 # Optimization args
 parser.add_argument('--n_epochs_pretrain', type=int, default=10, help='number of pre-training epochs')
 parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
@@ -52,7 +53,7 @@ parser.add_argument('--model_type', type=str, default='based_model', help='for m
 
 args = parser.parse_args()
 print('args:', args)
-args.save_pretrained_model = 'patchtst_pretrained_cw'+str(args.context_points)+'_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-pretrain' + str(args.n_epochs_pretrain) + '_mask' + str(args.mask_ratio)  + '_model' + str(args.pretrained_model_id)
+args.save_pretrained_model = 'patchtst_pretrained_cw'+str(args.context_points)+'mask_type_scheme_'+args.mask_type+'_patch'+str(args.patch_len) + '_stride'+str(args.stride) + '_epochs-pretrain' + str(args.n_epochs_pretrain) + '_mask' + str(args.mask_ratio)  + '_model' + str(args.pretrained_model_id)
 args.save_path = 'saved_models/' + args.dset_pretrain + '/masked_patchtst/' + args.model_type + '/'
 if not os.path.exists(args.save_path): os.makedirs(args.save_path)
 
@@ -99,7 +100,7 @@ def find_lr():
     loss_func = torch.nn.MSELoss(reduction='mean')
     # get callbacks
     cbs = [RevInCB(dls.vars, denorm=False)] if args.revin else []
-    cbs += [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio)]    
+    cbs += [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, mask_type=args.mask_type)]    
     # define learner
     learn = Learner(dls, model, 
                         loss_func, 
@@ -122,7 +123,7 @@ def pretrain_func(lr=args.lr):
     # get callbacks
     cbs = [RevInCB(dls.vars, denorm=False)] if args.revin else []
     cbs += [
-         PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio),
+         PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, mask_type=args.mask_type),
          SaveModelCB(monitor='valid_loss', fname=args.save_pretrained_model,                       
                         path=args.save_path)
         ]
