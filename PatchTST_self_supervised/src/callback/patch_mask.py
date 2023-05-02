@@ -124,10 +124,9 @@ def random_masking(xb, mask_ratio):
     len_keep = int(L * (1 - mask_ratio)) # number of patches that will be kept in the output tensor x_kept as an int
 
     noise = torch.rand(bs, L, nvars,device=xb.device)  # noise in [0, 1], bs x L x nvars
-
     # sort noise for each sample
     ids_shuffle = torch.argsort(noise, dim=1)  # ascend: small is keep, large is remove, tensor that contains the indices of the sorted noise tensor in ascending order along the second dimension
-
+       
     ids_restore = torch.argsort(ids_shuffle, dim=1)  # ids_restore: [bs x L x nvars], tensor containing the indices that will restore the original order of ids_shuffle
     
     # keep the first subset
@@ -146,6 +145,7 @@ def random_masking(xb, mask_ratio):
 
     # unshuffle to get the binary mask, tensor with original order where 1s are masked elements
     mask = torch.gather(mask, dim=1, index=ids_restore)   # [bs x num_patch x nvars], rearrange the tensor mask using the indices in ids_restore. This unshuffles the tensor to match the original order of patches in the input. The resulting tensor has same dims as mask but with elements rearranged based on the ids of ids_restore
+    
     return x_masked, x_kept, mask, ids_restore
 
 def masking_patches(xb, mask_ratio):
@@ -190,33 +190,34 @@ def masking_same(xb, mask_ratio):
      # xb: [bs x num_patch x n_vars x patch_len]
     bs, L, nvars, D = xb.shape
     x = xb.clone()
-    
+
     len_keep = int(nvars * (1 - mask_ratio)) # number of patches that will be kept in the output tensor x_kept as an int
 
     noise = torch.rand(bs, L, nvars,device=xb.device)  # noise in [0, 1], bs x L x nvars
     # sort noise for each sample
-    ids_shuffle = torch.argsort(noise[0][0])
+    ids_shuffle = torch.argsort(noise[0][0]) 
 
-    ids_restore = torch.argsort(ids_shuffle)  # ids_restore: [bs x L x nvars], tensor containing the indices that will restore the original order of ids_shuffle
+    ids_restore = torch.argsort(ids_shuffle)  
+
     # keep the first subset
-    ids_keep = ids_shuffle[:len_keep, ]    # ids_keep: [bs x len_keep x nvars], the first len_keep are selected from ids_shuffle
+    ids_keep = ids_shuffle[:len_keep, ] 
+    
+    x_kept = torch.index_select(x, dim=2, index=ids_keep)     
+    # removed x
+    x_removed = torch.zeros(bs, L, nvars-len_keep, D, device=xb.device)   
+    
+    x_ = torch.cat([x_kept, x_removed], dim=2)
+    # combine the kept part and the removed one
+    x_masked = torch.index_select(x_, dim=2, index=ids_restore)
+    
+    x_aux = torch.zeros(bs, L, nvars, device=xb.device) 
+    mask_kept = torch.index_select(x_aux, dim=2, index=ids_keep)    
+    # removed x
+    mask_removed = torch.ones(bs, L, nvars-len_keep, device=xb.device)               
+    mask_x_ = torch.cat([mask_kept, mask_removed], dim=2)                                       
+    # combine the kept part and the removed one
+    mask =  torch.index_select(mask_x_, dim=2, index=ids_restore) 
 
-    x_kept = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(bs, L, 1, D))     # x_kept: [bs x len_keep x nvars  x patch_len], the corresponding patches from x are gathered
-    # removed x
-    x_removed = torch.zeros(bs, L, nvars-len_keep, D, device=xb.device)                 # x_removed: [bs x (L-len_keep) x nvars x patch_len], a tensor created with zeros to represent the patches that will be removed, it has a size of the mask ratio
-    x_ = torch.cat([x_kept, x_removed], dim=2)                                          # x_: [bs x L x nvars x patch_len], x_kept and x_removed are concatenated along the secnond dimension to form a new tensor
-    # combine the kept part and the removed one
-    x_masked = torch.gather(x_, dim=2, index=ids_restore.unsqueeze(-1).repeat(bs,L,1,D)) # x_masked: [bs x num_patch x nvars x patch_len], tensor x_ is gathered back in its original order specified by ids_restore to obtain the output tensor x_masked
-   
-    x_aux = torch.zeros(bs, L, nvars, D, device=xb.device) 
-    mask_kept = torch.gather(x_aux, dim=1, index=ids_keep.unsqueeze(-1).repeat(bs, L, 1, D))     # x_kept: [bs x len_keep x nvars  x patch_len], the corresponding patches from x are gathered
-    # removed x
-    mask_removed = torch.ones(bs, L, nvars-len_keep, D, device=xb.device)                 # x_removed: [bs x (L-len_keep) x nvars x patch_len], a tensor created with zeros to represent the patches that will be removed, it has a size of the mask ratio
-    mask_x_ = torch.cat([mask_kept, mask_removed], dim=2)                                          # x_: [bs x L x nvars x patch_len], x_kept and x_removed are concatenated along the secnond dimension to form a new tensor
-    # combine the kept part and the removed one
-    mask = torch.gather(mask_x_, dim=2, index=ids_restore.unsqueeze(-1).repeat(bs,L,1,D)) # x_masked: [bs x num_patch x nvars x patch_len], tensor x_ is gathered back in its original order specified by ids_restore to obtain the output tensor x_masked
-    print(x_masked)
-    print(x)
     return x_masked, x_kept, mask, ids_restore
 
 def random_masking_3D(xb, mask_ratio):
