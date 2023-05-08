@@ -1,2 +1,8 @@
-PatchTST_self_supervised/dataset/
+PatchTST_self_supervised/dataset/electricity.csv
+PatchTST_self_supervised/dataset/ETTh2.csv
+PatchTST_self_supervised/dataset/ETTm1.csv
+PatchTST_self_supervised/dataset/ETTm2.csv
+PatchTST_self_supervised/dataset/exchange_rate.csv
+PatchTST_self_supervised/dataset/national_illness.csv
+PatchTST_self_supervised/dataset/traffic.csv
 PatchTST_supervised/dataset/

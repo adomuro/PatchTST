@@ -84,7 +84,7 @@ class GetTestCB(Callback):
         self.targets.append(self.yb)
 
     def after_test(self):           
-        self.preds = torch.concat(self.preds)#.detach().cpu().numpy()
-        self.targets = torch.concat(self.targets)#.detach().cpu().numpy()
+        self.preds = torch.cat(self.preds)#.detach().cpu().numpy()
+        self.targets = torch.cat(self.targets)#.detach().cpu().numpy()
 
 
