@@ -1,11 +1,12 @@
 __all__ = ['TrackTimerCB', 'TrackTrainingCB', 'PrintResultsCB', 'TerminateOnNaNCB',
-            'TrackerCB', 'SaveModelCB', 'EarlyStoppingCB']
+            'TrackerCB', 'SaveModelCB', 'SaveModelMixUpCB', 'EarlyStoppingCB']
 
 from ..basics import *
 from .core import Callback
 import torch
 import time
 import numpy as np
+import os
 from pathlib import Path
 
 
@@ -258,6 +259,37 @@ class SaveModelCB(TrackerCB):
         if self.run_finder: return
         if not self.every_epoch and self.global_rank == self.save_process_id:
             self.learner.load(self.last_saved_path, with_opt=self.with_opt)
+
+class SaveModelMixUpCB(TrackerCB):
+    def __init__(self, model, optimizer, monitor='train_loss', fname='model', path=None):
+        super().__init__(monitor=monitor)
+        self.model = model
+        self.optimizer = optimizer
+        self.path = path
+        self.fname = fname
+        self.best = float('inf') if self.operator == np.less else -float('inf')
+        self.last_saved_path = None
+
+    def _save(self, fname, path):
+        state = {
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict()
+        }
+        self.last_saved_path = os.path.join(path, f"{fname}.pt")
+        torch.save(state, self.last_saved_path)
+
+    def after_epoch(self, epoch, loss):
+        if self.new_best:
+            self._save(f'{self.fname}_best', self.path)
+            print(f'Best model saved at epoch {epoch} with {self.monitor} value: {self.best}.')
+        if self.every_epoch:
+            self._save(f'{self.fname}_{epoch}', self.path)
+
+    def after_fit(self):
+        if not self.every_epoch and self.last_saved_path:
+            checkpoint = torch.load(self.last_saved_path)
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
 
 class EarlyStoppingCB(TrackerCB):

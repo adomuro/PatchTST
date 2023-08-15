@@ -18,6 +18,13 @@ from datautils import *
 
 import argparse
 
+# Define a function to handle the argument parsing for --norm
+def normalize_type(value):
+    if value.lower() in ['nlinear', 'revin']:
+        return value.lower()
+    else:
+        return None
+
 parser = argparse.ArgumentParser()
 # Dataset and dataloader
 parser.add_argument('--dset_pretrain', type=str, default='etth1', help='dataset name')
@@ -27,10 +34,15 @@ parser.add_argument('--batch_size', type=int, default=64, help='batch size')
 parser.add_argument('--num_workers', type=int, default=0, help='number of workers for DataLoader')
 parser.add_argument('--scaler', type=str, default='standard', help='scale the input data')
 parser.add_argument('--features', type=str, default='M', help='for multivariate model or univariate model')
+parser.add_argument('--task', type=str, default='pretrain', help='task: pretrain or finetuning')
+
+parser.add_argument('--indicator', type=int, default=0, help='0: regular model, 1: indicator variable')
+
 # Patch
 parser.add_argument('--patch_len', type=int, default=12, help='patch length')
 parser.add_argument('--stride', type=int, default=12, help='stride between patch')
 # RevIN
+parser.add_argument('--norm', type=normalize_type, default=None, help='NLinear or reversible instance normalization per patches')
 parser.add_argument('--revin', type=int, default=1, help='reversible instance normalization')
 # Model args
 parser.add_argument('--n_layers', type=int, default=3, help='number of Transformer layers')
@@ -67,26 +79,51 @@ def get_model(c_in, args):
     c_in: number of variables
     """
     # get number of patches
-    num_patch = (max(args.context_points, args.patch_len)-args.patch_len) // args.stride + 1    
+    num_patch = (max(args.context_points, args.patch_len)-args.patch_len) // args.stride + 1 
+    
     print('number of patches:', num_patch)
     
     # get model
-    model = PatchTST(c_in=c_in,
-                target_dim=args.target_points,
-                patch_len=args.patch_len,
-                stride=args.stride,
-                num_patch=num_patch,
-                n_layers=args.n_layers,
-                n_heads=args.n_heads,
-                d_model=args.d_model,
-                shared_embedding=True,
-                d_ff=args.d_ff,                        
-                dropout=args.dropout,
-                head_dropout=args.head_dropout,
-                act='relu',
-                head_type='pretrain',
-                res_attention=False
-                )        
+
+    if args.indicator == 0:
+        model = PatchTST(c_in=c_in,
+                    target_dim=args.target_points,
+                    patch_len=args.patch_len,
+                    stride=args.stride,
+                    num_patch=num_patch,
+                    n_layers=args.n_layers,
+                    n_heads=args.n_heads,
+                    d_model=args.d_model,
+                    shared_embedding=True,
+                    d_ff=args.d_ff,                        
+                    dropout=args.dropout,
+                    head_dropout=args.head_dropout,
+                    act='relu',
+                    head_type='pretrain',
+                    res_attention=False,
+                    task = args.task,
+                    normalize = args.norm
+                    )    
+
+    if args.indicator == 1:
+        model = PatchTST(c_in=c_in,
+                    target_dim=args.target_points,
+                    patch_len=args.patch_len+1,
+                    stride=args.stride,
+                    num_patch=num_patch,
+                    n_layers=args.n_layers,
+                    n_heads=args.n_heads,
+                    d_model=args.d_model,
+                    shared_embedding=True,
+                    d_ff=args.d_ff,                        
+                    dropout=args.dropout,
+                    head_dropout=args.head_dropout,
+                    act='relu',
+                    head_type='pretrain',
+                    res_attention=False,
+                    task = args.task,
+                    normalize = args.norm
+                    )  
     # print out the model size
     print('number of model params', sum(p.numel() for p in model.parameters() if p.requires_grad))
     return model
@@ -99,8 +136,12 @@ def find_lr():
     # get loss
     loss_func = torch.nn.MSELoss(reduction='mean')
     # get callbacks
+
+    #cbs = [NLinearCB(dls.seq_len, dls.pred_len)]
     cbs = [RevInCB(dls.vars, denorm=False)] if args.revin else []
-    cbs += [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, mask_type=args.mask_type)]    
+
+    cbs += [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, mask_type=args.mask_type, indicator=args.indicator)] 
+    #cbs = [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, mask_type=args.mask_type, indicator=args.indicator)]    
     # define learner
     learn = Learner(dls, model, 
                         loss_func, 
@@ -116,17 +157,20 @@ def find_lr():
 def pretrain_func(lr=args.lr):
     # get dataloader
     dls = get_dls(args)
+    print("pretrain")
     # get model     
     model = get_model(dls.vars, args)
     # get loss
     loss_func = torch.nn.MSELoss(reduction='mean')
     # get callbacks
+    #cbs = [NLinearCB(dls.seq_len, dls.pred_len)]
     cbs = [RevInCB(dls.vars, denorm=False)] if args.revin else []
-    cbs += [
-         PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, mask_type=args.mask_type),
-         SaveModelCB(monitor='valid_loss', fname=args.save_pretrained_model,                       
-                        path=args.save_path)
-        ]
+    #cbs = [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, mask_type=args.mask_type, indicator=args.indicator),
+    #     SaveModelCB(monitor='valid_loss', fname=args.save_pretrained_model, path=args.save_path)]
+    
+    cbs += [PatchMaskCB(patch_len=args.patch_len, stride=args.stride, mask_ratio=args.mask_ratio, mask_type=args.mask_type, indicator=args.indicator),
+         SaveModelCB(monitor='valid_loss', fname=args.save_pretrained_model, path=args.save_path)]
+    
     # define learner
     learn = Learner(dls, model, 
                         loss_func, 

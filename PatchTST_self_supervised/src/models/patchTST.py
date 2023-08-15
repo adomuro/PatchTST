@@ -32,12 +32,11 @@ class PatchTST(nn.Module):
                  norm:str='BatchNorm', attn_dropout:float=0., dropout:float=0., act:str="gelu", 
                  res_attention:bool=True, pre_norm:bool=False, store_attn:bool=False,
                  pe:str='zeros', learn_pe:bool=True, head_dropout = 0, 
-                 head_type = "prediction", individual = False, 
+                 head_type = "prediction", individual = False, task = 'pretrain', normalize = 'RevIn', 
                  y_range:Optional[tuple]=None, verbose:bool=False, **kwargs):
 
         super().__init__()
-
-        assert head_type in ['pretrain', 'prediction', 'regression', 'classification'], 'head type should be either pretrain, prediction, or regression'
+        assert head_type in ['pretrain', 'pretrainDenoise', 'prediction', 'regression', 'classification'], 'head type should be either pretrain, prediction, or regression'
         # Backbone
         self.backbone = PatchTSTEncoder(c_in, num_patch=num_patch, patch_len=patch_len, 
                                 n_layers=n_layers, d_model=d_model, n_heads=n_heads, 
@@ -49,9 +48,15 @@ class PatchTST(nn.Module):
         # Head
         self.n_vars = c_in
         self.head_type = head_type
-
+        self.task = task
+        self.normalize = normalize
+ 
         if head_type == "pretrain":
             self.head = PretrainHead(d_model, patch_len, head_dropout) # custom head passed as a partial func with all its kwargs
+        elif head_type == "pretrainDenoise":
+            self.head = DenoisingHead(self.n_vars, d_model, patch_len, num_patch, head_dropout)
+        elif head_type == "contrastive":
+            self.head = ContrastiveLossHead(d_model, patch_len) # Contrastive loss head
         elif head_type == "prediction":
             self.head = PredictionHead(individual, self.n_vars, d_model, num_patch, target_dim, head_dropout)
         elif head_type == "regression":
@@ -59,13 +64,45 @@ class PatchTST(nn.Module):
         elif head_type == "classification":
             self.head = ClassificationHead(self.n_vars, d_model, target_dim, head_dropout)
 
-
-    def forward(self, z):                             
+    def forward(self, x):                             
         """
         z: tensor [bs x num_patch x n_vars x patch_len]
         """   
-        z = self.backbone(z)                                                                # z: [bs x nvars x d_model x num_patch]
-        z = self.head(z)                                                                    
+
+        if self.task == "pretrain":
+    
+            if self.normalize == "nlinear":
+
+                seq_last = x[:, :, :, -1:].detach() # try this or  x[:, -1:, :, -1:].detach()
+                x = x - seq_last
+                z = self.backbone(x)                                                                # z: [bs x nvars x d_model x num_patch]
+                z = self.head(z)
+                z = z + seq_last
+
+            if self.normalize == "revin":
+
+                eps=1e-5
+                #dim2reduce = tuple(range(1, x.ndim-1))
+                mean = torch.mean(x, dim=x.ndim-1, keepdim=True).detach()
+                stdev = torch.sqrt(torch.var(x, dim=x.ndim-1, keepdim=True, unbiased=False) + eps).detach()
+                x = x - mean
+                x = x / stdev
+                
+                z = self.backbone(x)                                                                # z: [bs x nvars x d_model x num_patch]
+                z = self.head(z)
+
+                z = z * stdev
+                z = z + mean
+
+            if self.normalize == None:
+
+                z = self.backbone(x)                                                             # z: [bs x nvars x d_model x num_patch]
+                z = self.head(z)
+
+        if self.task == "finetune":
+            z = self.backbone(x)                                                                # z: [bs x nvars x d_model x num_patch]
+            z = self.head(z)
+
         # z: [bs x target_dim x nvars] for prediction
         #    [bs x target_dim] for regression
         #    [bs x target_dim] for classification
@@ -116,12 +153,10 @@ class ClassificationHead(nn.Module):
 class PredictionHead(nn.Module):
     def __init__(self, individual, n_vars, d_model, num_patch, forecast_len, head_dropout=0, flatten=False):
         super().__init__()
-
         self.individual = individual
         self.n_vars = n_vars
         self.flatten = flatten
         head_dim = d_model*num_patch
-
         if self.individual:
             self.linears = nn.ModuleList()
             self.dropouts = nn.ModuleList()
@@ -140,7 +175,7 @@ class PredictionHead(nn.Module):
         """
         x: [bs x nvars x d_model x num_patch]
         output: [bs x forecast_len x nvars]
-        """
+        """ 
         if self.individual:
             x_out = []
             for i in range(self.n_vars):
@@ -174,6 +209,87 @@ class PretrainHead(nn.Module):
         return x
 
 
+class DenoisingHead(nn.Module):
+    def __init__(self, nvars, d_model, patch_len, num_patch, dropout):
+        super().__init__()
+
+        ## https://github.com/pranjaldatta/Denoising-Autoencoder-in-Pytorch/blob/master/DenoisingAutoencoder.ipynb
+
+        self.encoder = nn.Sequential(
+            nn.Linear(nvars * d_model * num_patch, 256),
+            nn.ReLU(True),
+            nn.Linear(256, 128),
+            nn.ReLU(True),
+            nn.Linear(128, 64),
+            nn.ReLU(True)
+        )
+    
+        self.decoder = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.ReLU(True),
+            nn.Linear(128, 256),
+            nn.ReLU(True),
+            nn.Linear(256, nvars * d_model * num_patch),
+            nn.Sigmoid(),
+        )
+        self.dropout = nn.Dropout(dropout)
+        self.linear = nn.Linear(d_model, patch_len)
+
+    def forward(self, x):
+        """
+        x: tensor [bs x nvars x d_model x num_patch]
+        output: tensor [bs x num_patch x nvars x patch_len]
+        """
+
+        bs, nvars, d_model, num_patch = x.shape
+
+        # Flatten and encode
+        x = x.view(bs, -1)
+        encoded = self.encoder(self.dropout(x))  # [bs x 64]
+        # Decode and reshape
+        decoded = self.decoder(encoded)  # [bs x (n_vars * d_model * num_patch)]
+        
+        decoded = decoded.view(bs, nvars, d_model, num_patch)  # [bs x nvars x d_model x num_patch]
+        x = decoded.transpose(2,3) 
+        x = self.linear( self.dropout(x) )      # [bs x nvars x num_patch x patch_len]
+        x = x.permute(0,2,1,3)                  # [bs x num_patch x nvars x patch_len]
+        return x
+
+class ContrastiveLossHead(nn.Module):
+    def __init__(self, d_model, patch_len, temperature=0.1):
+        super().__init__()
+        self.temperature = temperature
+        self.encoder = nn.Sequential(
+            nn.Linear(d_model * patch_len, 256),
+            nn.ReLU(True),
+            nn.Linear(256, 128),
+            nn.ReLU(True),
+            nn.Linear(128, 64),
+            nn.ReLU(True)
+        )
+        self.projection_head = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.ReLU(True),
+            nn.Linear(128, d_model * patch_len)
+        )
+        self.dropout = nn.Dropout(0.5)
+
+    def forward(self, x):
+        """
+        x: tensor [bs x nvars x d_model x num_patch]
+        output: tensor [bs x num_patch x nvars x patch_len]
+        """
+        bs, nvars, d_model, num_patch = x.shape
+
+        # Flatten and encode
+        x = x.view(bs, -1)
+        encoded = self.encoder(self.dropout(x))  # [bs x 64]
+        projected = self.projection_head(encoded)  # [bs x (n_vars * d_model * num_patch)]
+        projected = projected.view(bs, nvars, d_model, num_patch)  # [bs x nvars x d_model x num_patch]
+        x = projected.transpose(2, 3)
+        x = x.permute(0, 2, 1, 3)
+        return x
+
 class PatchTSTEncoder(nn.Module):
     def __init__(self, c_in, num_patch, patch_len, 
                  n_layers=3, d_model=128, n_heads=16, shared_embedding=True,
@@ -195,8 +311,17 @@ class PatchTSTEncoder(nn.Module):
         else:
             self.W_P = nn.Linear(patch_len, d_model)      
 
+
+        ###### CHANNEL INDEPENCY ######
         # Positional encoding
-        self.W_pos = positional_encoding(pe, learn_pe, num_patch, d_model)
+        
+        self.W_pos = positional_encoding(pe, learn_pe, self.num_patch, d_model)
+        
+        ###### ONLY PATCHING ######
+
+        # Positional encoding
+        #self.W_pos = positional_encoding(pe, learn_pe, num_patch, d_model*c_in)
+        #print(self.W_pos.shape)
 
         # Residual dropout
         self.dropout = nn.Dropout(dropout)
@@ -210,7 +335,10 @@ class PatchTSTEncoder(nn.Module):
         """
         x: tensor [bs x num_patch x nvars x patch_len]
         """
+
         bs, num_patch, n_vars, patch_len = x.shape
+        
+
         # Input encoding
         if not self.shared_embedding:
             x_out = []
@@ -219,10 +347,18 @@ class PatchTSTEncoder(nn.Module):
                 x_out.append(z)
             x = torch.stack(x_out, dim=2)
         else:
-            x = self.W_P(x)                                                      # x: [bs x num_patch x nvars x d_model]
-        x = x.transpose(1,2)                                                     # x: [bs x nvars x num_patch x d_model]        
+            x = self.W_P(x)                                                   # x: [bs x num_patch x nvars x d_model]
+        x = x.transpose(1,2)                                                     # x: [bs x nvars x num_patch x d_model]       
 
-        u = torch.reshape(x, (bs*n_vars, num_patch, self.d_model) )              # u: [bs * nvars x num_patch x d_model]
+        ##### CI 
+
+        u = torch.reshape(x, (bs*n_vars, num_patch, self.d_model))               # u: [bs * nvars x num_patch x d_model]
+        
+        ##### Only PATCHING
+        #u = torch.reshape(x, (bs, num_patch, n_vars*self.d_model))               # u: [bs x num_patch x nvars * d_model]
+        #print(u.shape)
+        #print(self.W_pos.shape)
+        # projection + position embedding: input to feed the Transformer Encoder 
         u = self.dropout(u + self.W_pos)                                         # u: [bs * nvars x num_patch x d_model]
 
         # Encoder
@@ -270,8 +406,8 @@ class TSTEncoderLayer(nn.Module):
 
         # Multi-Head attention
         self.res_attention = res_attention
+        #print(d_model, n_heads, d_k, d_v)
         self.self_attn = MultiheadAttention(d_model, n_heads, d_k, d_v, attn_dropout=attn_dropout, proj_dropout=dropout, res_attention=res_attention)
-
         # Add & Norm
         self.dropout_attn = nn.Dropout(dropout)
         if "batch" in norm.lower():
@@ -300,14 +436,20 @@ class TSTEncoderLayer(nn.Module):
         """
         src: tensor [bs x q_len x d_model]
         """
+
+        # Create a random key_padding_mask tensor
+        src_key_padding_mask = torch.randint(2, size=src.size()[:-1], dtype=torch.bool)
+
         # Multi-Head attention sublayer
         if self.pre_norm:
             src = self.norm_attn(src)
         ## Multi-Head attention
+
         if self.res_attention:
             src2, attn, scores = self.self_attn(src, src, src, prev)
         else:
             src2, attn = self.self_attn(src, src, src)
+            #src2, attn = self.self_attn(src, src, src, src_key_padding_mask) #TO DO mask(0,-inf) key_padding_mask
         if self.store_attn:
             self.attn = attn
         ## Add & Norm

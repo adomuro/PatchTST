@@ -104,7 +104,7 @@ class Learner(GetAttr):
 
 
     def fit_one_cycle(self, n_epochs, lr_max=None, pct_start=0.3):
-        self.n_epochs = n_epochs        
+        self.n_epochs = n_epochs    
         self.lr_max = lr_max if lr_max else self.lr
         cb = OneCycleLR(lr_max=self.lr_max, pct_start=pct_start)
         self.fit(self.n_epochs, cbs=cb)                
@@ -160,7 +160,8 @@ class Learner(GetAttr):
         self('after_batch_test') 
         
     def _do_batch_train(self):        
-        # forward + get loss + backward + optimize          
+        # forward + get loss + backward + optimize
+                  
         self.pred, self.loss = self.train_step(self.batch)                                
         # zero the parameter gradients
         self.opt.zero_grad()                 
@@ -171,7 +172,7 @@ class Learner(GetAttr):
 
     def train_step(self, batch):
         # get the inputs 
-        self.xb, self.yb = batch 
+        self.xb, self.yb = batch
         # forward
         pred = self.model_forward()
         # compute loss
@@ -179,9 +180,11 @@ class Learner(GetAttr):
         return pred, loss
 
     def model_forward(self): 
-        self('before_forward')  # before_forward from patch_mask.py and it brings to patch_masking
 
+        self('before_forward')  # before_forward from patch_mask.py and it brings to patch_masking
+        
         self.pred = self.model(self.xb)
+    
         self('after_forward')
         return self.pred
 
@@ -430,6 +433,8 @@ def load_model(path, model, opt=None, with_opt=False, device='cpu', strict=True)
     state = torch.load(path, map_location=device)
     if not opt: with_opt=False
     model_state = state['model'] if with_opt else state
+    #print(model_state['backbone.W_pos'])
+    #print(model_state['backbone.W_pos'].shape)
     get_model(model).load_state_dict(model_state, strict=strict)
     if with_opt: opt.load_state_dict(state['opt'])
     model = model.to(device)
@@ -451,12 +456,22 @@ def get_model(model):
 def transfer_weights(weights_path, model, exclude_head=True, device='cpu'):
     # state_dict = model.state_dict()
     new_state_dict = torch.load(weights_path, map_location=device)
-    #print('new_state_dict',new_state_dict)
+
+    #print(new_state_dict['backbone.W_pos'].shape)
+    #print(new_state_dict['backbone.W_P.weight'].shape)
+    
+    # Print the shape of the layer from the pretrained model
+    #print("Pretrained model shape:", new_state_dict['backbone.W_P.weight'].shape)
+
+    # Print the shape of the corresponding layer from the new model
+    #print("New model shape:", model.state_dict()['backbone.W_P.weight'].shape)
+
     matched_layers = 0
     unmatched_layers = []
     for name, param in model.state_dict().items():        
+        #print(name, param.shape)
         if exclude_head and 'head' in name: continue
-        if name in new_state_dict:            
+        if name in new_state_dict:           
             matched_layers += 1
             input_param = new_state_dict[name]
             if input_param.shape == param.shape: param.copy_(input_param)

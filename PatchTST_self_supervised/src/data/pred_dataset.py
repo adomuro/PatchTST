@@ -120,6 +120,7 @@ class Dataset_ETT_minute(Dataset):
             self.seq_len = size[0]
             self.label_len = size[1]
             self.pred_len = size[2]
+
         # init
         assert split in ['train', 'test', 'val']
         type_map = {'train': 0, 'val': 1, 'test': 2}

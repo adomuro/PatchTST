@@ -6,3 +6,6 @@ PatchTST_self_supervised/dataset/exchange_rate.csv
 PatchTST_self_supervised/dataset/national_illness.csv
 PatchTST_self_supervised/dataset/traffic.csv
 PatchTST_supervised/dataset/
+PatchTST_self_supervised/LossMixUp.png
+PatchTST_self_supervised/autoencoder_pretrain2.py
+PatchTST_self_supervised/denoise_pretrain.py

@@ -22,6 +22,7 @@ def get_dls(params):
         #root_path = '/data/datasets/public/ETDataset/ETT-small/'
         root_path = './dataset/'
         size = [params.context_points, 0, params.target_points]
+
         dls = DataLoaders(
                 datasetCls=Dataset_ETT_minute,
                 dataset_kwargs={
@@ -174,7 +175,9 @@ def get_dls(params):
                 workers=params.num_workers,
                 )
     # dataset is assume to have dimension len x nvars
+
     dls.vars, dls.len = dls.train.dataset[0][0].shape[1], params.context_points
+    dls.seq_len, dls.pred_len = params.context_points, params.target_points
     dls.c = dls.train.dataset[0][1].shape[0]
     return dls
 

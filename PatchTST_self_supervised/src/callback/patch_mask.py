@@ -8,7 +8,7 @@ from .core import Callback
 # Cell
 class PatchCB(Callback):
 
-    def __init__(self, patch_len, stride ):
+    def __init__(self, patch_len, stride, indicator):
         """
         Callback used to perform patching on the batch input data
         Args:
@@ -17,6 +17,7 @@ class PatchCB(Callback):
         """
         self.patch_len = patch_len
         self.stride = stride
+        self.indicator = indicator
 
     def before_forward(self): self.set_patch()
        
@@ -24,12 +25,60 @@ class PatchCB(Callback):
         """
         take xb from learner and convert to patch: [bs x seq_len x n_vars] -> [bs x num_patch x n_vars x patch_len]
         """
+        
+        #self.xb = x # change!!!!!!!!!!
         xb_patch, num_patch = create_patch(self.xb, self.patch_len, self.stride)    # xb: [bs x seq_len x n_vars]
-        # learner get the transformed input
-        self.learner.xb = xb_patch                              # xb_patch: [bs x num_patch x n_vars x patch_len]           
+        
+        ### CHANGE ####
+        if self.indicator == 0:
+            self.learner.xb = xb_patch                              # xb_patch: [bs x num_patch x n_vars x patch_len]           
+
+        if self.indicator == 1:
+            ind =  torch.zeros(xb_patch.shape[0], xb_patch.shape[1], xb_patch.shape[2], 1)
+            xb_patch = torch.cat((xb_patch, ind), dim=3)
+            # learner get the transformed input
+            self.learner.xb = xb_patch                              # xb_patch: [bs x num_patch x n_vars x patch_len+1]           
+
+class PatchNoiseCB(Callback):
+
+    def __init__(self, patch_len, stride, indicator):
+        """
+        Callback used to perform patching on the batch input data
+        Args:
+            patch_len:        patch length
+            stride:           stride
+        """
+        self.patch_len = patch_len
+        self.stride = stride
+        self.indicator = indicator
+
+    def before_forward(self): self.set_patch()
+       
+    def set_patch(self):
+        """
+        take xb from learner and convert to patch: [bs x seq_len x n_vars] -> [bs x num_patch x n_vars x patch_len]
+        """
+        
+        xb_patch, num_patch = create_patch(self.xb, self.patch_len, self.stride)    # xb: [bs x seq_len x n_vars]
+        mu = 0
+        std = 1
+        xb_Noise = addGaussianNoise(xb_patch, mu, std)
+        
+        if self.indicator == 0:
+            self.learner.xb = xb_Noise               # learner.xb: noisy 4D tensor [bs x num_patch x n_vars x patch_len]   
+            self.learner.yb = xb_patch               # learner.yb: non-noisy 4d tensor
+        
+        if self.indicator == 1:
+        
+            ind =  torch.zeros(xb_patch.shape[0], xb_patch.shape[1], xb_patch.shape[2], 1)
+            xb_Noise = torch.cat((xb_Noise, ind), dim=3)
+            xb_patch = torch.cat((xb_patch, ind), dim=3)
+            # learner get the transformed input
+            self.learner.xb = xb_Noise               # learner.xb: noisy 4D tensor with Indicator Variable [bs x num_patch x n_vars x patch_len]   
+            self.learner.yb = xb_patch               # learner.yb: non-noisy 4d tensor with Indicator Variable
 
 class PatchMaskCB(Callback):
-    def __init__(self, patch_len, stride, mask_ratio, mask_type,
+    def __init__(self, patch_len, stride, mask_ratio, mask_type, indicator,
                         mask_when_pred:bool=False):
         """
         Callback used to perform the pretext task of reconstruct the original data after a binary mask has been applied.
@@ -41,7 +90,8 @@ class PatchMaskCB(Callback):
         self.patch_len = patch_len
         self.stride = stride
         self.mask_ratio = mask_ratio
-        self.mask_type = mask_type   
+        self.mask_type = mask_type 
+        self.indicator = indicator  
 
     def before_fit(self):
         # overwrite the predefined loss function
@@ -56,7 +106,7 @@ class PatchMaskCB(Callback):
         """
         xb_patch, num_patch = create_patch(self.xb, self.patch_len, self.stride)    # xb_patch: [bs x num_patch x n_vars x patch_len]
         if self.mask_type == 'random_masking':
-            xb_mask, _, self.mask, _ = random_masking(xb_patch, self.mask_ratio)   # xb_mask: [bs x num_patch x n_vars x patch_len]
+            xb_mask, _, self.mask, _ = random_masking(xb_patch, self.mask_ratio, self.indicator)   # xb_mask: [bs x num_patch x n_vars x patch_len]
         if self.mask_type == 'patches':
             xb_mask, _, self.mask = masking_patches(xb_patch, self.mask_ratio)
         if self.mask_type == 'features':
@@ -76,11 +126,39 @@ class PatchMaskCB(Callback):
         """
 
         #### TYPE OF MASK NEED DIFFERENT LOSSES???? #####
-        loss = (preds - target) ** 2
-        #loss = loss.mean(dim=-2)
-        loss = loss.mean(dim=-1) # RANDOM MASKING
-        #loss = (loss * self.mask[0][0][0]).sum() / self.mask.sum()
-        loss = (loss * self.mask).sum() / self.mask.sum()
+
+        if self.indicator == 0:
+            
+            # Calculate the average of each masked patch
+            mask = self.mask.unsqueeze(-1)
+            patch_averages = (target * mask).sum(dim=-1) / target.shape[3]
+
+            # Calculate loss
+            loss = (preds - target) ** 2
+            #loss = loss.mean(dim=-2)
+            loss = loss.mean(dim=-1) # RANDOM MASKING
+            loss = loss + patch_averages
+            #loss = (loss * self.mask[0][0][0]).sum() / self.mask.sum()
+            loss = (loss * self.mask).sum() / self.mask.sum()
+
+            
+        
+        if self.indicator == 1:
+
+            # Calculate the average of each masked patch
+            mask = self.mask.unsqueeze(-1)
+            patch_averages = (target * mask).sum(dim=-1) / target.shape[3]
+
+            # Calculate loss
+            indicator =  torch.zeros(target.shape[0], target.shape[1], target.shape[2], 1)
+            target_2 = torch.cat((target, indicator), dim=3)
+
+            loss = (preds - target_2) ** 2
+            #loss = loss.mean(dim=-2)
+            loss = loss.mean(dim=-1) # RANDOM MASKING
+            loss = loss + patch_averages
+            #loss = (loss * self.mask[0][0][0]).sum() / self.mask.sum()
+            loss = (loss * self.mask).sum() / self.mask.sum()
         return loss
 
 
@@ -95,8 +173,13 @@ def create_patch(xb, patch_len, stride):
         
     xb = xb[:, s_begin:, :]                                              # xb: [bs x tgt_len x nvars]
     xb = xb.unfold(dimension=1, size=patch_len, step=stride)             # xb: [bs x num_patch x n_vars x patch_len]
+    
     return xb, num_patch
 
+def addGaussianNoise(x, mu, std):
+    noise = torch.randn(x.size()) * std + mu
+    x_noisy = x + noise
+    return x_noisy
 
 class Patch(nn.Module):
     def __init__(self,seq_len, patch_len, stride):
@@ -116,7 +199,7 @@ class Patch(nn.Module):
         x = x.unfold(dimension=1, size=self.patch_len, step=self.stride)                 # xb: [bs x num_patch x n_vars x patch_len]
         return x
 
-def random_masking(xb, mask_ratio):
+def random_masking(xb, mask_ratio, indicator):
     # xb: [bs x num_patch x n_vars x patch_len]
     bs, L, nvars, D = xb.shape
     x = xb.clone()
@@ -131,6 +214,7 @@ def random_masking(xb, mask_ratio):
     
     # keep the first subset
     ids_keep = ids_shuffle[:, :len_keep, :]    # ids_keep: [bs x len_keep x nvars], the first len_keep are selected from ids_shuffle
+    
     x_kept = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).repeat(1, 1, 1, D))     # x_kept: [bs x len_keep x nvars  x patch_len], the corresponding patches from x are gathered
 
     # removed x
@@ -146,7 +230,13 @@ def random_masking(xb, mask_ratio):
     # unshuffle to get the binary mask, tensor with original order where 1s are masked elements
     mask = torch.gather(mask, dim=1, index=ids_restore)   # [bs x num_patch x nvars], rearrange the tensor mask using the indices in ids_restore. This unshuffles the tensor to match the original order of patches in the input. The resulting tensor has same dims as mask but with elements rearranged based on the ids of ids_restore
     
-    return x_masked, x_kept, mask, ids_restore
+    if indicator == 0:
+        return x_masked, x_kept, mask, ids_restore
+    if indicator == 1: 
+        mask_2 = mask.unsqueeze(-1)
+        x_indicator = torch.cat((x_masked, mask_2), dim=3)
+
+        return x_indicator, x_kept, mask, ids_restore
 
 def masking_patches(xb, mask_ratio):
     # Last `mask_ratio´ of patches are masked 

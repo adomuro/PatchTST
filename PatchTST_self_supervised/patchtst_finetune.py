@@ -18,6 +18,13 @@ from datautils import *
 
 import argparse
 
+# Define a function to handle the argument parsing for --norm
+def normalize_type(value):
+    if value.lower() in ['nlinear', 'revin']:
+        return value.lower()
+    else:
+        return None
+
 parser = argparse.ArgumentParser()
 # Pretraining and Finetuning
 parser.add_argument('--is_finetune', type=int, default=0, help='do finetuning or not')
@@ -30,10 +37,15 @@ parser.add_argument('--batch_size', type=int, default=64, help='batch size')
 parser.add_argument('--num_workers', type=int, default=0, help='number of workers for DataLoader')
 parser.add_argument('--scaler', type=str, default='standard', help='scale the input data')
 parser.add_argument('--features', type=str, default='M', help='for multivariate model or univariate model')
+parser.add_argument('--task', type=str, default='pretrain', help='task: pretrain or finetuning')
+
+parser.add_argument('--indicator', type=int, default=0, help='0: regular model, 1: indicator variable')
+
 # Patch
 parser.add_argument('--patch_len', type=int, default=12, help='patch length')
 parser.add_argument('--stride', type=int, default=12, help='stride between patch')
 # RevIN
+parser.add_argument('--norm', type=normalize_type, default=None, help='NLinear or reversible instance normalization per patches')
 parser.add_argument('--revin', type=int, default=1, help='reversible instance normalization')
 # Model args
 parser.add_argument('--n_layers', type=int, default=3, help='number of Transformer layers')
@@ -72,25 +84,51 @@ def get_model(c_in, args, head_type, weight_path=None):
     """
     # get number of patches
     num_patch = (max(args.context_points, args.patch_len)-args.patch_len) // args.stride + 1    
+
     print('number of patches:', num_patch)
     
     # get model
-    model = PatchTST(c_in=c_in,
-                target_dim=args.target_points,
-                patch_len=args.patch_len,
-                stride=args.stride,
-                num_patch=num_patch,
-                n_layers=args.n_layers,
-                n_heads=args.n_heads,
-                d_model=args.d_model,
-                shared_embedding=True,
-                d_ff=args.d_ff,                        
-                dropout=args.dropout,
-                head_dropout=args.head_dropout,
-                act='relu',
-                head_type=head_type,
-                res_attention=False
-                )    
+
+    if args.indicator == 0:
+        model = PatchTST(c_in=c_in,
+                    target_dim=args.target_points,
+                    patch_len=args.patch_len,
+                    stride=args.stride,
+                    num_patch=num_patch,
+                    n_layers=args.n_layers,
+                    n_heads=args.n_heads,
+                    d_model=args.d_model,
+                    shared_embedding=True,
+                    d_ff=args.d_ff,                        
+                    dropout=args.dropout,
+                    head_dropout=args.head_dropout,
+                    act='relu',
+                    head_type=head_type,
+                    res_attention=False,
+                    task = args.task,
+                    normalize = args.norm
+                    ) 
+        
+    if args.indicator == 1:
+        model = PatchTST(c_in=c_in,
+                    target_dim=args.target_points,
+                    patch_len=args.patch_len+1,
+                    stride=args.stride,
+                    num_patch=num_patch,
+                    n_layers=args.n_layers,
+                    n_heads=args.n_heads,
+                    d_model=args.d_model,
+                    shared_embedding=True,
+                    d_ff=args.d_ff,                        
+                    dropout=args.dropout,
+                    head_dropout=args.head_dropout,
+                    act='relu',
+                    head_type=head_type,
+                    res_attention=False,
+                    task = args.task,
+                    normalize = args.norm
+                    ) 
+
     if weight_path: model = transfer_weights(weight_path, model)
     # print out the model size
     print('number of model params', sum(p.numel() for p in model.parameters() if p.requires_grad))
@@ -100,7 +138,7 @@ def get_model(c_in, args, head_type, weight_path=None):
 
 def find_lr(head_type):
     # get dataloader
-    dls = get_dls(args)    
+    dls = get_dls(args) 
     model = get_model(dls.vars, args, head_type)
     # transfer weight
     weight_path = args.save_path + args.pretrained_model + '.pth'
@@ -108,8 +146,9 @@ def find_lr(head_type):
     # get loss
     loss_func = torch.nn.MSELoss(reduction='mean')
     # get callbacks
+    #cbs = [NLinearCB(dls.seq_len, dls.pred_len)]
     cbs = [RevInCB(dls.vars)] if args.revin else []
-    cbs += [PatchCB(patch_len=args.patch_len, stride=args.stride)]
+    cbs += [PatchCB(patch_len=args.patch_len, stride=args.stride, indicator=args.indicator)]
         
     # define learner
     learn = Learner(dls, model, 
@@ -140,12 +179,15 @@ def finetune_func(lr=args.lr):
     weight_path = args.save_path + args.pretrained_model + '.pth'
     #weight_path = args.pretrained_model + '.pth'
     model = transfer_weights(weight_path, model)
+
     # get loss
     loss_func = torch.nn.MSELoss(reduction='mean')   
     # get callbacks
+
+    #cbs = [NLinearCB(dls.seq_len, dls.pred_len)]
     cbs = [RevInCB(dls.vars, denorm=True)] if args.revin else []
     cbs += [
-         PatchCB(patch_len=args.patch_len, stride=args.stride),
+         PatchCB(patch_len=args.patch_len, stride=args.stride, indicator=args.indicator),
          SaveModelCB(monitor='valid_loss', fname=args.save_finetuned_model, path=args.save_path)
         ]
     # define learner
@@ -173,9 +215,11 @@ def linear_probe_func(lr=args.lr):
     # get loss
     loss_func = torch.nn.MSELoss(reduction='mean')    
     # get callbacks
+
+    #cbs = [NLinearCB(dls.seq_len, dls.pred_len)]
     cbs = [RevInCB(dls.vars, denorm=True)] if args.revin else []
     cbs += [
-         PatchCB(patch_len=args.patch_len, stride=args.stride),
+         PatchCB(patch_len=args.patch_len, stride=args.stride, indicator=args.indicator),
          SaveModelCB(monitor='valid_loss', fname=args.save_finetuned_model, path=args.save_path)
         ]
     # define learner
@@ -196,8 +240,10 @@ def test_func(weight_path):
     #model = get_model(dls.vars, args, head_type='prediction').to('cuda')
     model = get_model(dls.vars, args, head_type='prediction')
     # get callbacks
+
+    #cbs = [NLinearCB(dls.seq_len, dls.pred_len)]
     cbs = [RevInCB(dls.vars, denorm=True)] if args.revin else []
-    cbs += [PatchCB(patch_len=args.patch_len, stride=args.stride)]
+    cbs += [PatchCB(patch_len=args.patch_len, stride=args.stride, indicator=args.indicator)]
     learn = Learner(dls, model,cbs=cbs)
     out  = learn.test(dls.test, weight_path=weight_path+'.pth', scores=[mse,mae])         # out: a list of [pred, targ, score]
     print('score:', out[2])

@@ -29,8 +29,15 @@ class DataLoaders:
         self.train = self.train_dataloader()
         self.valid = self.val_dataloader()
         self.test = self.test_dataloader()        
- 
-        
+    
+    def __len__(self):
+        # Implement the logic to return the length of your dataset
+        return len(self.train) 
+
+    def __getitem__(self, idx):
+        # Implement the logic to retrieve a specific data item at index 'idx'
+        return self.train[idx]  
+
     def train_dataloader(self):
         return self._make_dloader("train", shuffle=self.shuffle_train)
 
@@ -49,7 +56,7 @@ class DataLoaders:
             batch_size=self.batch_size,
             num_workers=self.workers,
             collate_fn=self.collate_fn,
-        )
+            )
 
     @classmethod
     def add_cli(self, parser):
